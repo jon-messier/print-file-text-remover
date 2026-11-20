@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Print File Text Remover</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23176b5b'/%3E%3Cpath d='M9 22V10h3l5 7.5V10h3v12h-3l-5-7.5V22z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/app.css">
+<script src="vendor/tesseract/tesseract.min.js"></script>
+<script src="vendor/jszip.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">N</span>
+    <div>
+      <h1>Print File Text Remover</h1>
+      <p class="sub">Removes the name and number lettering and plans the NAME / 00 live text · <span id="build" class="build">Build 2026-11-20 · release 11</span></p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <span id="status" class="status" role="status"></span>
+    <button id="btn-help" class="btn ghost" aria-haspopup="dialog">How to</button>
+    <button id="btn-reset" class="btn ghost" hidden>Start over</button>
+    <button id="btn-download" class="btn primary" hidden disabled>Download cleaned zip</button>
+  </div>
+</header>
+
+<main>
+  <!-- intake -->
+  <section id="intake" class="intake">
+    <div id="drop" class="drop" tabindex="0">
+      <svg viewBox="0 0 48 48" width="44" height="44" aria-hidden="true"><path d="M6 14a4 4 0 0 1 4-4h9l4 5h15a4 4 0 0 1 4 4v15a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M24 33V21m-5 5 5-5 5 5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <h2>Drop a folder of print files here</h2>
+      <p>Sub-folders are kept as-is in the download. You can also drop a .zip or loose PDFs.</p>
+      <div class="drop-btns">
+        <label class="btn primary">Choose folder<input id="in-folder" type="file" webkitdirectory directory multiple hidden></label>
+        <label class="btn">Choose files or zip<input id="in-files" type="file" accept=".pdf,.zip,application/pdf,application/zip" multiple hidden></label>
+      </div>
+      <p class="fine">Files are processed on this computer. Nothing is uploaded.</p>
+    </div>
+    <details class="rules">
+      <summary>What gets removed</summary>
+      <ul>
+        <li><b>Removed automatically:</b> the player name and the back and front numbers, whatever they say (NAME, PLAYER, a real last name, 00, 26…), in block, sans, serif or script lettering, plus their outlines. They're found by reading the lettering, by where it sits (the name is the word next to the back number), and by the front/back number pair.</li>
+        <li><b>Kept by default:</b> any other lettering (team names, logo text, wording that appears more than once on the garment). It's listed for each design so you can switch it on.</li>
+        <li>Removed paths are deleted outright. Clip groups, artwork and everything else stay exactly as they were.</li>
+        <li>Sizes of the same design (e.g. <code>SM_109433.1_YS</code>, <code>.2_YM</code>, … or reversible <code>SM_111042_1_inner</code>, <code>_2_inner</code>, …) share one set of choices. If one size can't be read, its lettering is matched to the other sizes.</li>
+      </ul>
+    </details>
+  </section>
+
+  <!-- progress -->
+  <section id="progress" class="progress" hidden>
+    <div class="bar"><div id="bar-fill"></div></div>
+    <p id="progress-text"></p>
+  </section>
+
+  <!-- review -->
+  <section id="review" class="review" hidden>
+    <div class="summary" id="summary"></div>
+    <div id="next-step" class="next-step" hidden>
+      <b>Next: build the live text in Illustrator</b>
+      <ol>
+        <li>Unzip the download.</li>
+        <li>In Illustrator choose <b>File › Scripts › Other Script…</b> and pick <code>LiveTextBatch.jsx</code> from the unzipped folder.</li>
+        <li>Choose the unzipped folder. Every PDF gets its live text and is saved as <code>.ai</code> beside it.</li>
+        <li>Open all the new <code>.ai</code> files (File › Open, select them all) and run <code>SwitchOpenDocsToCMYK.jsx</code> the same way. RGB files are switched to CMYK and saved; files already in CMYK are left unchanged.</li>
+      </ol>
+      <button class="linkbtn" id="btn-hide-next">Hide</button>
+    </div>
+
+    <div class="viewer-head">
+      <div class="picker">
+        <button id="btn-prev" class="btn icon" title="Previous file (←)" aria-label="Previous file">‹</button>
+        <select id="file-select" aria-label="File to review"></select>
+        <button id="btn-next" class="btn icon" title="Next file (→)" aria-label="Next file">›</button>
+        <button id="btn-next-flag" class="btn ghost small" title="Jump to next file that needs attention">Next flagged</button>
+      </div>
+      <div class="modes" role="tablist">
+        <button data-mode="compare" class="seg on">Compare</button>
+        <button data-mode="orig" class="seg">Original</button>
+        <button data-mode="clean" class="seg">Cleaned</button>
+        <label class="chk"><input type="checkbox" id="chk-boxes" checked> Mark removed</label>
+        <label class="chk"><input type="checkbox" id="chk-live" checked> Live text preview</label>
+      </div>
+    </div>
+
+    <div class="viewer-body">
+      <div class="stage-wrap">
+        <div id="stage" class="stage">
+          <canvas id="cv-clean"></canvas>
+          <canvas id="cv-live" class="live"></canvas>
+          <div id="orig-clip" class="orig-clip"><canvas id="cv-orig"></canvas></div>
+          <svg id="overlay" class="overlay"></svg>
+          <div id="divider" class="divider"><span></span></div>
+          <input id="slider" type="range" min="0" max="1000" value="500" aria-label="Compare position">
+          <div class="tag tl">Original</div><div class="tag tr">Cleaned</div>
+        </div>
+        <div id="live-note" class="meta live-note"></div>
+        <div id="file-flags" class="file-flags"></div>
+      </div>
+      <aside id="design-panel" class="design-panel"></aside>
+    </div>
+  </section>
+</main>
+
+<!-- How-to guide (opened from the top bar) -->
+<dialog id="help" class="help" aria-labelledby="help-title">
+  <div class="help-head">
+    <h2 id="help-title">How to use the Text Remover</h2>
+    <input id="help-search" type="search" placeholder="Search the guide…" aria-label="Search the guide">
+    <button class="btn icon ghost" id="help-close" aria-label="Close guide" title="Close (Esc)">×</button>
+  </div>
+  <div class="help-body">
+    <nav class="help-toc" aria-label="Guide sections">
+      <p class="toc-group">Start here</p>
+      <a href="#h-overview">The whole process</a>
+      <a href="#h-before">Before you start</a>
+      <p class="toc-group">On this site</p>
+      <a href="#h-load">1. Load the print files</a>
+      <a href="#h-review">2. Review what's removed</a>
+      <a href="#h-live">3. Set up the live text</a>
+      <a href="#h-download">4. Download the zip</a>
+      <p class="toc-group">In Illustrator</p>
+      <a href="#h-batch">5. Build the live text</a>
+      <a href="#h-cmyk">6. Switch to CMYK</a>
+      <a href="#h-check">7. Final check</a>
+      <p class="toc-group">Reference</p>
+      <a href="#h-flags">Flags and warnings</a>
+      <a href="#h-trouble">Troubleshooting</a>
+      <a href="#h-terms">Terms</a>
+    </nav>
+    <div class="help-content" id="help-content">
+
+<section id="h-overview">
+  <h3>The whole process</h3>
+  <p>The vendor's print files come with the player name and numbers drawn as flattened shapes. This tool deletes those shapes and puts live <b>NAME</b> and <b>00</b> text in their place, so production can swap in the real names and numbers.</p>
+  <ol class="flow">
+    <li><b>This site:</b> load the PDFs, check what will be removed, choose fonts and placement, download a zip.</li>
+    <li><b>Illustrator: <code>LiveTextBatch.jsx</code></b> builds the live text in every file and saves each one as <code>.ai</code>.</li>
+    <li><b>Illustrator: <code>SwitchOpenDocsToCMYK.jsx</code></b> switches the open <code>.ai</code> files to CMYK and saves them.</li>
+  </ol>
+  <p>Both scripts come inside the zip you download, so there's nothing to install. The site works entirely on your computer; nothing is uploaded.</p>
+</section>
+
+<section id="h-before">
+  <h3>Before you start</h3>
+  <ul>
+    <li><b>Use Chrome.</b> Fonts and the live text preview rely on it.</li>
+    <li><b>Install the fonts</b> for the name and numbers on your Mac. Illustrator needs them to build the text.</li>
+    <li><b>Keep the vendor's file names.</b> Sizes of one design are matched by name: <code>SM_109433.1_YS</code>, <code>SM_109433.2_YM</code>… or reversible jerseys <code>SM_111042_1_inner</code>, <code>SM_111042_2_inner</code>…</li>
+    <li><b>Put the SKU in the file or folder name</b> (e.g. a folder called <code>SLBB119A</code>). It picks the standard text placement for that garment.</li>
+    <li><b>Check the version.</b> The build stamp is under the title at the top. If it's older than expected, reload the page.</li>
+  </ul>
+</section>
+
+<section id="h-load">
+  <h3>1. Load the print files</h3>
+  <ol>
+    <li>Click <b>Choose folder</b> and pick the folder of PDFs, or drag the folder onto the page. A <code>.zip</code> or loose PDFs work too (<b>Choose files or zip</b>).</li>
+    <li>Wait for the progress bar. Each file is read and its lettering identified, usually in well under a minute for a batch of 30.</li>
+  </ol>
+  <p class="tip">Sub-folders are kept exactly as they are in the download. Anything that isn't a PDF is copied into the zip unchanged.</p>
+</section>
+
+<section id="h-review">
+  <h3>2. Review what's removed</h3>
+  <p>The row of boxes at the top sums up the batch: files, designs, items removed, how many files <b>need a look</b>, and any <b>problems</b>.</p>
+  <h4>Moving between files</h4>
+  <ul>
+    <li>Pick a file from the dropdown, or use <b>‹ ›</b> (or the ← → keys).</li>
+    <li><b>Next flagged</b> jumps to the next file that needs attention. The flags for the current file are listed under the picture.</li>
+  </ul>
+  <h4>The picture</h4>
+  <ul>
+    <li><b>Compare</b>: drag the slider; the original is on the left, the cleaned file on the right.</li>
+    <li><b>Original</b> / <b>Cleaned</b>: show one or the other.</li>
+    <li><b>Mark removed</b>: dashed red boxes around everything being removed.</li>
+    <li><b>Live text preview</b>: draws the NAME / 00 that will be built (see step 3).</li>
+  </ul>
+  <h4>The Remove tab</h4>
+  <p>The panel on the right is for the whole <b>design</b> (every size of that order). The size chips show which sizes are in it.</p>
+  <ul>
+    <li><b>Personalization (removed)</b>: Player name, Back number, Front number. These are on by default, whatever the vendor wrote (NAME, a real name, 00, 26…). The reading and the reason are shown next to each.</li>
+    <li><b>Other lettering (kept by default)</b>: team names and logo text. Switch one on to remove it too.</li>
+    <li><b>Possible text, low confidence</b>: shapes that might be letters. Usually artwork; leave them off unless the picture shows otherwise.</li>
+  </ul>
+  <p class="tip">Every switch applies to all sizes of the design. Removed shapes, and their outlines, are deleted outright; clip groups and all other artwork stay exactly as they were.</p>
+</section>
+
+<section id="h-live">
+  <h3>3. Set up the live text</h3>
+  <p>Open the <b>Live text</b> tab in the right panel. Settings apply to every size of the design.</p>
+  <h4>SKU</h4>
+  <p>Shows the SKU and size found from the file or folder name (and artboard). If it says <b>not detected</b> or <b>no preset</b>, the script has no standard placement for it; use <b>Where vendor's text was</b> instead.</p>
+  <h4>Fonts</h4>
+  <ol>
+    <li>Click <b>Use fonts from this computer</b>. Chrome asks permission once.</li>
+    <li>Pick the font for the name and the number. Fonts are remembered for next time.</li>
+  </ol>
+  <h4>Make</h4>
+  <p>Tick <b>Back name</b>, <b>Back number</b> and <b>Front number</b> for the lines you want. Unticking one only skips that line; everything else stays in exactly the same position.</p>
+  <h4>Colors</h4>
+  <ul>
+    <li><b>Match vendor file</b> (default): fill, stroke and stroke weight are copied from the vendor's lettering in each file, and the dropdowns show what was detected.</li>
+    <li><b>Use mine</b>: your own choices for every size. Changing any detected color switches to this automatically, keeping the rest of what was detected.</li>
+  </ul>
+  <p class="tip">Spot colors go by name. If a file has its own version of a swatch (e.g. the vendor's KellyGreen), Illustrator uses that file's swatch, and the preview shows it the same way.</p>
+  <h4>Back placement</h4>
+  <ul>
+    <li><b>Script default</b>: the measured standard position for the SKU and size.</li>
+    <li><b>Where vendor's text was</b>: lines the text up with the vendor's name and number, in the vendor's order.</li>
+    <li><b>Sizes &amp; stacking</b>: name height, number height, gap, and whether the name sits above or below the number. Leave them blank for the SKU standard.</li>
+  </ul>
+  <h4>Front number</h4>
+  <p>Placed exactly where the vendor's front number was. <b>Same font, colors and stroke as the back number</b> is on by default. Set the <b>Height</b> and the <b>Alignment</b> (right, center or left edge stays put).</p>
+  <h4>Many designs at once</h4>
+  <p><b>Use these fonts &amp; placement for every design</b> copies fonts, the Make ticks, placement and alignment to all designs. Each design keeps its own colors and stroke weights.</p>
+</section>
+
+<section id="h-download">
+  <h3>4. Download the zip</h3>
+  <ol>
+    <li>When every flagged file has been checked, click <b>Download cleaned zip</b>.</li>
+    <li>Unzip it. Inside you'll find:
+      <ul>
+        <li>the cleaned PDFs, in the same folders as you loaded them;</li>
+        <li><code>_live_text_manifest.json</code>: the live text plan the script reads (don't edit or move it);</li>
+        <li><code>LiveTextBatch.jsx</code> and <code>SwitchOpenDocsToCMYK.jsx</code>.</li>
+      </ul>
+    </li>
+  </ol>
+  <p class="tip">Keep the unzipped folder together. The script finds every PDF from the manifest at the top of it.</p>
+</section>
+
+<section id="h-batch">
+  <h3>5. Build the live text (LiveTextBatch.jsx)</h3>
+  <ol>
+    <li>Open Illustrator.</li>
+    <li>Choose <b>File › Scripts › Other Script…</b> and pick <code>LiveTextBatch.jsx</code> from the unzipped folder.</li>
+    <li>When asked, choose the <b>unzipped folder</b> (the one with <code>_live_text_manifest.json</code> in it).</li>
+    <li>Choose the options and click <b>Start</b>:
+      <ul>
+        <li><b>Skip files that already have an .ai</b> (on): safe to re-run after fixing a few files.</li>
+        <li><b>Delete each PDF after its .ai is saved</b> (off): leave off unless you're sure.</li>
+      </ul>
+    </li>
+    <li>Wait. Each PDF opens, gets its NAME / 00 text (one text object per line with the Fill › Stroke › Fill appearance), is saved as <code>.ai</code> next to the PDF and closes.</li>
+    <li>Read the summary at the end. Details for every file are in <code>LiveTextBatch_log.txt</code> in the folder.</li>
+  </ol>
+  <p class="tip">The files are still in RGB at this point. That's expected; step 6 fixes it.</p>
+</section>
+
+<section id="h-cmyk">
+  <h3>6. Switch to CMYK (SwitchOpenDocsToCMYK.jsx)</h3>
+  <p>Illustrator only lets a script change color mode on documents that a person opened, so this is a separate step.</p>
+  <ol>
+    <li>Choose <b>File › Open</b>, select all the new <code>.ai</code> files and click <b>Open</b>.</li>
+    <li>Choose <b>File › Scripts › Other Script…</b> and pick <code>SwitchOpenDocsToCMYK.jsx</code>. Confirm.</li>
+    <li>Each RGB file is switched to CMYK, saved and closed. Files already in CMYK are closed unchanged. The default swatches Illustrator adds during the switch are removed again.</li>
+    <li>Anything that didn't switch stays open and is listed at the end.</li>
+  </ol>
+</section>
+
+<section id="h-check">
+  <h3>7. Final check</h3>
+  <p>Open a few finished <code>.ai</code> files (one per design is a good habit) and check:</p>
+  <ul class="checks">
+    <li><b>Document Color Mode</b> is CMYK (File › Document Color Mode).</li>
+    <li>No leftover vendor lettering or outlines around the new text.</li>
+    <li>NAME and 00 are live text with Fill › Stroke › Fill in the Appearance panel.</li>
+    <li>Colors use the file's swatches (no duplicate swatches with the same name).</li>
+    <li>Team names and logos are untouched.</li>
+  </ul>
+</section>
+
+<section id="h-flags">
+  <h3>Flags and warnings</h3>
+  <dl>
+    <dt>Found by position only (reads "…")</dt><dd>A number was picked from its layout (front/back pair next to a name) but didn't read clearly. Look at the picture; switch it off on the Remove tab if it's wrong.</dd>
+    <dt>Doesn't match the other sizes</dt><dd>One size found different lettering from the rest of its design. Compare it with another size.</dd>
+    <dt>No … found here, but other sizes of this design have one</dt><dd>Check that size; the lettering may be drawn differently.</dd>
+    <dt>Pixel check failed</dt><dd>Something outside the removed lettering changed. Don't use that file without a close look.</dd>
+    <dt>Couldn't process this file</dt><dd>The PDF couldn't be read. It's copied to the zip unchanged; handle it by hand.</dd>
+    <dt>No measured placement / no preset</dt><dd>The SKU or size has no standard position. Use <b>Where vendor's text was</b>, or ask for the SKU to be measured.</dd>
+    <dt>Pick a font / pick a fill color</dt><dd>Live text can't be built until it's set on the Live text tab.</dd>
+    <dt>Vendor's … isn't a production swatch</dt><dd>The vendor used a plain RGB or CMYK color, so your color from the Live text tab is used instead.</dd>
+  </dl>
+</section>
+
+<section id="h-trouble">
+  <h3>Troubleshooting</h3>
+  <dl>
+    <dt>The site seems to be an old version</dt><dd>Check the build stamp under the title. Reload the page (⌘R, or ⌘⇧R to be sure).</dd>
+    <dt>The name or a number wasn't removed</dt><dd>Look in <b>Other lettering</b> or <b>low confidence</b> on the Remove tab and switch it on. If that's needed often for a design style, send the PDFs in so detection can be improved.</dd>
+    <dt>Something that should stay was removed</dt><dd>Switch it off on the Remove tab. Changes apply to all sizes of the design.</dd>
+    <dt>Sizes of one order show up as separate designs</dt><dd>The file names don't follow the vendor pattern. Rename them to match (<code>ORDER.1_SIZE</code>, <code>ORDER.2_SIZE</code>…) and load again.</dd>
+    <dt>"Font … is not installed on this computer"</dt><dd>Install the font on the Mac running Illustrator, then run LiveTextBatch again with <b>Skip files that already have an .ai</b> on.</dd>
+    <dt>The script says no manifest was found</dt><dd>Choose the top of the unzipped folder, where <code>_live_text_manifest.json</code> is.</dd>
+    <dt>Files are still RGB</dt><dd>Run step 6 on files you opened yourself with File › Open. It doesn't work on files a script opened.</dd>
+    <dt>Preview colors look slightly different from Illustrator</dt><dd>The preview is an on-screen approximation. The real color always comes from the swatch in the file.</dd>
+    <dt>Text sits in the wrong place</dt><dd>Check the SKU shown on the Live text tab. Try <b>Where vendor's text was</b>, or adjust Sizes &amp; stacking.</dd>
+  </dl>
+</section>
+
+<section id="h-terms">
+  <h3>Terms</h3>
+  <dl>
+    <dt>Design</dt><dd>All the sizes of one order (e.g. every <code>SM_109433.N_SIZE</code> file). Remove switches and Live text settings apply to a whole design.</dd>
+    <dt>Size</dt><dd>One print file within a design (YS, YM, … or 1, 2, … for reversible jerseys).</dd>
+    <dt>Personalization</dt><dd>The player name, back number and front number.</dd>
+    <dt>Live text</dt><dd>Editable Illustrator text (NAME / 00) that replaces the vendor's flattened lettering.</dd>
+    <dt>Manifest</dt><dd><code>_live_text_manifest.json</code>, the plan the site writes and LiveTextBatch reads.</dd>
+    <dt>Flag</dt><dd>A note that a file needs a look. Files without flags matched every check.</dd>
+  </dl>
+</section>
+
+      <p class="help-empty" id="help-empty" hidden>Nothing in the guide matches that search.</p>
+    </div>
+  </div>
+</dialog>
+
+<script src="js/help.js?v=18"></script>
+<script type="module" src="js/app.js?v=18"></script>
+</body>
+</html>
